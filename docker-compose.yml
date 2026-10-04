@@ -1,0 +1,87 @@
+name: jellyfin
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+    compress: "true"
+
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:${JELLYFIN_TAG:-12.1}
+    container_name: jellyfin
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: "${TZ:-Europe/Athens}"
+      JELLYFIN_PublishedServerUrl: "https://${DOMAIN:?DOMAIN is required}"
+    volumes:
+      - config:/config
+      # Also holds transcode segments by default, which can reach several GB
+      # per active stream. Make sure the Docker disk has room.
+      - cache:/cache
+      - media:/media:ro
+      - fonts:/usr/local/share/fonts/custom:ro
+    networks:
+      - jellyfin
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8096/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+      start_interval: 5s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          # Software transcoding needs roughly 1–2 CPUs per 1080p stream.
+          # With hardware transcoding (docker-compose.hwaccel.yml) far less is needed.
+          # noinspection ComposeUnknownValues
+          cpus: "${JELLYFIN_CPU_LIMIT:-2}"
+          # noinspection ComposeUnknownValues
+          memory: "${JELLYFIN_MEMORY_LIMIT:-2G}"
+          # noinspection ComposeUnknownValues
+          pids: ${JELLYFIN_PIDS_LIMIT:-1024}
+        reservations:
+          # noinspection ComposeUnknownValues
+          memory: "${JELLYFIN_MEMORY_RESERVATION:-512M}"
+    labels:
+      - "traefik.enable=true"
+      # Router (TLS comes from the websecure entrypoint's wildcard default)
+      - "traefik.http.routers.jellyfin.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.jellyfin.entrypoints=websecure"
+      - "traefik.http.routers.jellyfin.service=jellyfin"
+      - "traefik.http.routers.jellyfin.middlewares=jellyfin-ipallowlist,strict-path@file"
+      # Middlewares
+      - "traefik.http.middlewares.jellyfin-ipallowlist.ipallowlist.sourcerange=${IPV4_ALLOWLIST:-0.0.0.0/0},${IPV6_ALLOWLIST:-::/0}"
+      # Service
+      - "traefik.http.services.jellyfin.loadbalancer.server.port=8096"
+
+networks:
+  jellyfin:
+    name: jellyfin
+    # Pinned so the gateway Traefik connects from is predictable — enter it under
+    # Dashboard > Networking > Known proxies.
+    ipam:
+      config:
+        - subnet: ${JELLYFIN_SUBNET:-172.30.0.0/16}
+          gateway: ${JELLYFIN_GATEWAY:-172.30.0.1}
+
+volumes:
+  config:
+    name: jellyfin-config
+  cache:
+    name: jellyfin-cache
+  media:
+    name: jellyfin-media
+    driver: local
+    driver_opts:
+      type: "${MEDIA_MOUNT_TYPE:?MEDIA_MOUNT_TYPE is required}"
+      o: "${MEDIA_MOUNT_O:?MEDIA_MOUNT_O is required}"
+      device: "${MEDIA_MOUNT_DEVICE:?MEDIA_MOUNT_DEVICE is required}"
+  fonts:
+    name: jellyfin-fonts

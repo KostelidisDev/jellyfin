@@ -1,0 +1,11 @@
+# Check the host first:  ls -l /dev/dri
+# You should see renderD128 (and card0/card1).
+
+services:
+  jellyfin:
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      # GID of the "render" group that owns /dev/dri/renderD128 on the host:
+      #   stat -c %g /dev/dri/renderD128
+      - "${RENDER_GID:?RENDER_GID is required (stat -c %g /dev/dri/renderD128)}"
