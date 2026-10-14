@@ -1,13 +1,12 @@
 # Jellyfin
 
-Docker Compose stack for [Jellyfin](https://jellyfin.org), served behind an existing Traefik reverse proxy. The media library is mounted read-only from a network share (NFS or CIFS). Intel/AMD hardware transcoding is optional.
+Docker Compose stack for [Jellyfin](https://jellyfin.org), served behind an existing Traefik reverse proxy. The media library is mounted read-only from a network share (NFS or CIFS). NVIDIA hardware transcoding (NVENC/NVDEC) is optional.
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
 | `docker-compose.yml` | The Jellyfin service, its network, volumes and Traefik labels |
-| `docker-compose.hwaccel.yml` | Optional override that passes `/dev/dri` into the container for hardware transcoding |
 | `.env.example` | Template for `.env`, which holds all the settings and is not committed |
 
 ## Prerequisites
@@ -71,6 +70,9 @@ MEDIA_MOUNT_DEVICE=//192.168.1.10/media
 | --- | --- | --- |
 | `JELLYFIN_TAG` | `12.1` | Image tag. Pin an exact release |
 | `TZ` | `Europe/Athens` | Container time zone |
+| `GPU_RUNTIME` | `runc` | Container runtime. Set to `nvidia` for hardware transcoding |
+| `GPU_DEVICES` | `all` | GPUs exposed to the container (`NVIDIA_VISIBLE_DEVICES`). Ignored unless `GPU_RUNTIME=nvidia` |
+| `GPU_CAPABILITIES` | `compute,utility,video` | Driver capabilities (`NVIDIA_DRIVER_CAPABILITIES`). `video` is required for NVENC/NVDEC |
 | `JELLYFIN_SUBNET` | `172.30.0.0/16` | Subnet of the `jellyfin` network. Must not overlap other Docker networks |
 | `JELLYFIN_GATEWAY` | `172.30.0.1` | Gateway of that network, which is the address Traefik connects from |
 | `IPV4_ALLOWLIST` | `0.0.0.0/0` | IPv4 CIDR(s) allowed through Traefik |
@@ -84,23 +86,25 @@ Software transcoding needs about 1–2 CPUs per 1080p stream, so raise `JELLYFIN
 
 ## Hardware transcoding
 
-Supported for Intel (QSV/VA-API) and AMD (VA-API) GPUs.
+Supported for NVIDIA GPUs (NVENC/NVDEC). It is off by default (`GPU_RUNTIME=runc`).
 
-1. Check that the host exposes a render node:
+1. Install the NVIDIA driver and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on the host, then register the runtime with Docker:
 
    ```sh
-   ls -l /dev/dri            # should list renderD128
-   stat -c %g /dev/dri/renderD128
+   sudo nvidia-ctk runtime configure --runtime=docker
+   sudo systemctl restart docker
+   nvidia-smi                # should list the GPU
    ```
 
-2. Uncomment these lines in `.env`, with `RENDER_GID` set to the GID printed above:
+2. Set the runtime in `.env`:
 
    ```dotenv
-   COMPOSE_FILE=docker-compose.yml:docker-compose.hwaccel.yml
-   RENDER_GID=993
+   GPU_RUNTIME=nvidia
    ```
 
-3. Recreate the container with `docker compose up -d`, then pick the method under **Dashboard → Playback → Transcoding**.
+   To expose only specific GPUs, also set `GPU_DEVICES` (e.g. `0` or a GPU UUID).
+
+3. Recreate the container with `docker compose up -d`, then select **NVIDIA NVENC** under **Dashboard → Playback → Transcoding**.
 
 ## Volumes
 
