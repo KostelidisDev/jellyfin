@@ -1,4 +1,4 @@
-name: jellyfin
+name: ${SERVICE_NAME:-jellyfin}
 
 x-logging: &default-logging
   driver: json-file
@@ -9,13 +9,20 @@ x-logging: &default-logging
 
 services:
   jellyfin:
-    image: jellyfin/jellyfin:${JELLYFIN_TAG:-12.1}
-    container_name: jellyfin
+    image: jellyfin/jellyfin:${JELLYFIN_TAG:-12.2}
+    container_name: ${SERVICE_NAME:-jellyfin}
     restart: unless-stopped
     stop_grace_period: 30s
     # GPU off by default; set GPU_RUNTIME=nvidia to enable hardware transcoding.
-    # Requires the NVIDIA Container Toolkit on the host (nvidia-ctk runtime configure).
+    # Linux hosts only: Docker Desktop on macOS can't pass a GPU to containers,
+    # so on a Mac this stays "runc" and transcoding runs on the CPU.
     runtime: ${GPU_RUNTIME:-runc}
+    # Honoured by `docker compose up` / Portainer deploys, but NOT when Docker
+    # Desktop restarts containers on startup — the watchdog service covers that.
+    depends_on:
+      rclone-secret:
+        condition: service_healthy
+        restart: true
     security_opt:
       - no-new-privileges:true
     environment:
@@ -31,10 +38,18 @@ services:
       # Also holds transcode segments by default, which can reach several GB
       # per active stream. Make sure the Docker disk has room.
       - cache:/cache
-      - media:/media:ro
+      # nocopy: /media exists in the image, so without it Docker mounts the NFS
+      # volume at container *create* (to copy contents), before rclone is running.
+      - type: volume
+        source: media
+        target: /media
+        read_only: true
+        volume:
+          nocopy: true
       - fonts:/usr/local/share/fonts/custom:ro
     networks:
-      - jellyfin
+      jellyfin:
+        ipv4_address: ${SUBNET_PREFIX:-192.168.100}.2
     healthcheck:
       test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8096/health"]
       interval: 30s
@@ -46,50 +61,180 @@ services:
     deploy:
       resources:
         limits:
-          # Software transcoding needs roughly 1–2 CPUs per 1080p stream.
-          # With hardware transcoding (docker-compose.hwaccel.yml) far less is needed.
+          # Software transcoding needs roughly 1–2 CPUs per 1080p stream;
+          # with GPU_RUNTIME=nvidia far less is needed.
           # noinspection ComposeUnknownValues
           cpus: "${JELLYFIN_CPU_LIMIT:-2}"
           # noinspection ComposeUnknownValues
-          memory: "${JELLYFIN_MEMORY_LIMIT:-2G}"
+          memory: "${JELLYFIN_MEMORY_LIMIT:-1G}"
           # noinspection ComposeUnknownValues
-          pids: ${JELLYFIN_PIDS_LIMIT:-1024}
+          pids: ${JELLYFIN_PIDS_LIMIT:-128}
         reservations:
           # noinspection ComposeUnknownValues
           memory: "${JELLYFIN_MEMORY_RESERVATION:-512M}"
     labels:
       - "traefik.enable=true"
       # Router (TLS comes from the websecure entrypoint's wildcard default)
-      - "traefik.http.routers.jellyfin.rule=Host(`${DOMAIN}`)"
-      - "traefik.http.routers.jellyfin.entrypoints=websecure"
-      - "traefik.http.routers.jellyfin.service=jellyfin"
-      - "traefik.http.routers.jellyfin.middlewares=jellyfin-ipallowlist,strict-path@file"
-      # Middlewares
-      - "traefik.http.middlewares.jellyfin-ipallowlist.ipallowlist.sourcerange=${IPV4_ALLOWLIST:-0.0.0.0/0},${IPV6_ALLOWLIST:-::/0}"
+      - "traefik.http.routers.${SERVICE_NAME:-jellyfin}.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.${SERVICE_NAME:-jellyfin}.entrypoints=websecure"
+      - "traefik.http.routers.${SERVICE_NAME:-jellyfin}.service=${SERVICE_NAME:-jellyfin}"
+      - "traefik.http.routers.${SERVICE_NAME:-jellyfin}.middlewares=${SERVICE_NAME:-jellyfin}-ipallowlist,strict-path@file"
+      # Middlewares — note: the defaults allow everyone (public server).
+      - "traefik.http.middlewares.${SERVICE_NAME:-jellyfin}-ipallowlist.ipallowlist.sourcerange=${IPV4_ALLOWLIST:-0.0.0.0/0},${IPV6_ALLOWLIST:-::/0}"
       # Service
-      - "traefik.http.services.jellyfin.loadbalancer.server.port=8096"
+      - "traefik.http.services.${SERVICE_NAME:-jellyfin}.loadbalancer.server.port=8096"
+
+  rclone-secret:
+    # Keep in step with your other rclone images.
+    image: rclone/rclone:${RCLONE_TAG:-1.75}
+    container_name: ${SERVICE_NAME:-jellyfin}-rclone-secret
+    restart: unless-stopped
+    # Serves NFS on an unprivileged port and writes only to its cache volume.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - TZ=${TZ:-Europe/Athens}
+      # Underlying SFTP remote
+      - RCLONE_CONFIG_STORAGE_TYPE=sftp
+      - RCLONE_CONFIG_STORAGE_HOST=${SFTP_HOST:?SFTP_HOST is required}
+      - RCLONE_CONFIG_STORAGE_PORT=${SFTP_PORT:-22}
+      - RCLONE_CONFIG_STORAGE_USER=${SFTP_USER:?SFTP_USER is required}
+      # Set one of these. PASS must be obscured (rclone obscure), not plaintext.
+      # KEY_PEM is the private key on one line with literal \n for line breaks.
+      - RCLONE_CONFIG_STORAGE_PASS=${SFTP_PASS:-}
+      - RCLONE_CONFIG_STORAGE_KEY_PEM=${SFTP_KEY_PEM:-}
+      # Skips shell auto-detection on connect.
+      - RCLONE_CONFIG_STORAGE_SHELL_TYPE=${SFTP_SHELL_TYPE:-unix}
+      # Crypt remote layered on top of the SFTP remote
+      - RCLONE_CONFIG_SECRET_TYPE=crypt
+      - RCLONE_CONFIG_SECRET_REMOTE=storage:${SFTP_PATH:?SFTP_PATH is required}
+      - RCLONE_CONFIG_SECRET_PASSWORD=${RCLONE_CONFIG_SECRET_PASSWORD:?RCLONE_CONFIG_SECRET_PASSWORD is required}
+      - RCLONE_CONFIG_SECRET_PASSWORD2=${RCLONE_CONFIG_SECRET_PASSWORD2:?RCLONE_CONFIG_SECRET_PASSWORD2 is required}
+    # --read-only replaces the old :ro on the CIFS bind.
+    # The cache limits matter: without them, "full" mode keeps every file ever
+    # read until the Docker disk is full.
+    command: >
+      serve nfs secret:
+      --addr :2049
+      --read-only
+      --vfs-cache-mode full
+      --cache-dir /cache
+      --vfs-cache-max-size ${RCLONE_CACHE_MAX_SIZE:-50G}
+      --vfs-cache-max-age ${RCLONE_CACHE_MAX_AGE:-72h}
+      --vfs-cache-min-free-space ${RCLONE_CACHE_MIN_FREE:-10G}
+    volumes:
+      - rclone-cache:/cache
+    networks:
+      nfs:
+        ipv4_address: ${SUBNET_PREFIX:-192.168.100}.6
+    logging: *default-logging
+    # Only checks that the NFS port is open; SFTP is connected lazily, so bad
+    # credentials won't fail this. Check `docker logs` after the first deploy.
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2049"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          # Decryption is CPU-bound; a 4K stream needs a full core.
+          # noinspection ComposeUnknownValues
+          cpus: "${RCLONE_CPU_LIMIT:-1}"
+          # noinspection ComposeUnknownValues
+          memory: "${RCLONE_MEMORY_LIMIT:-512M}"
+          # noinspection ComposeUnknownValues
+          pids: ${RCLONE_PIDS_LIMIT:-128}
+        reservations:
+          # noinspection ComposeUnknownValues
+          memory: "${RCLONE_MEMORY_RESERVATION:-256M}"
+
+  # Starts Jellyfin once rclone is healthy (Docker ignores depends_on when it
+  # restarts containers itself, e.g. when Docker Desktop launches), and restarts
+  # Jellyfin whenever rclone restarts, so the NFS mount never goes stale.
+  # Note: while this runs, a manually stopped Jellyfin is started again within
+  # ~15 s — stop the watchdog first if you want Jellyfin down.
+  watchdog:
+    image: docker:${DOCKER_CLI_TAG:-29.9.0-cli-alpine3.24}
+    container_name: ${SERVICE_NAME:-jellyfin}-watchdog
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: "${TZ:-Europe/Athens}"
+      SERVICE: "${SERVICE_NAME:-jellyfin}"
+      RCLONE: "${SERVICE_NAME:-jellyfin}-rclone-secret"
+    volumes:
+      # Full Docker API access: only container start/restart is actually used.
+      - /var/run/docker.sock:/var/run/docker.sock
+    network_mode: none
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        last=""
+        echo "watchdog: managing $$SERVICE after $$RCLONE"
+        while :; do
+          health=$$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$$RCLONE" 2>/dev/null)
+          started=$$(docker inspect -f '{{.State.StartedAt}}' "$$RCLONE" 2>/dev/null)
+          if [ "$$health" = "healthy" ]; then
+            if [ -n "$$last" ] && [ "$$started" != "$$last" ]; then
+              echo "watchdog: rclone restarted, restarting $$SERVICE to remount NFS"
+              docker restart "$$SERVICE" >/dev/null
+            elif [ "$$(docker inspect -f '{{.State.Running}}' "$$SERVICE" 2>/dev/null)" != "true" ]; then
+              echo "watchdog: rclone healthy, starting $$SERVICE"
+              docker start "$$SERVICE" >/dev/null
+            fi
+            last="$$started"
+          fi
+          sleep 15
+        done
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          # noinspection ComposeUnknownValues
+          cpus: "0.1"
+          # noinspection ComposeUnknownValues
+          memory: "32M"
+          # noinspection ComposeUnknownValues
+          pids: 32
 
 networks:
   jellyfin:
-    name: jellyfin
-    # Pinned so the gateway Traefik connects from is predictable — enter it under
-    # Dashboard > Networking > Known proxies.
+    name: ${SERVICE_NAME:-jellyfin}
+    # Pinned so the gateway Traefik connects from is predictable — enter
+    # ${SUBNET_PREFIX}.1 under Dashboard > Networking > Known proxies.
+    # SUBNET_PREFIX must not overlap your LAN or VPN ranges.
     ipam:
       config:
-        - subnet: ${JELLYFIN_SUBNET:-172.30.0.0/16}
-          gateway: ${JELLYFIN_GATEWAY:-172.30.0.1}
+        - subnet: ${SUBNET_PREFIX:-192.168.100}.0/30
+  nfs:
+    name: ${SERVICE_NAME:-jellyfin}-nfs
+    ipam:
+      config:
+        - subnet: ${SUBNET_PREFIX:-192.168.100}.4/30
 
 volumes:
+  rclone-cache:
+    name: ${SERVICE_NAME:-jellyfin}-rclone-cache
   config:
-    name: jellyfin-config
+    name: ${SERVICE_NAME:-jellyfin}-config
   cache:
-    name: jellyfin-cache
+    name: ${SERVICE_NAME:-jellyfin}-cache
   media:
-    name: jellyfin-media
+    name: ${SERVICE_NAME:-jellyfin}-media
     driver: local
     driver_opts:
-      type: "${MEDIA_MOUNT_TYPE:?MEDIA_MOUNT_TYPE is required}"
-      o: "${MEDIA_MOUNT_O:?MEDIA_MOUNT_O is required}"
-      device: "${MEDIA_MOUNT_DEVICE:?MEDIA_MOUNT_DEVICE is required}"
+      type: nfs
+      o: "addr=${SUBNET_PREFIX:-192.168.100}.6,port=2049,mountport=2049,nfsvers=3,tcp,nolock,soft"
+      device: ":/"
   fonts:
-    name: jellyfin-fonts
+    name: ${SERVICE_NAME:-jellyfin}-fonts
