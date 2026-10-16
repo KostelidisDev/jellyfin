@@ -124,9 +124,9 @@ services:
       --read-only
       --vfs-cache-mode full
       --cache-dir /cache
-      --vfs-cache-max-size ${RCLONE_CACHE_MAX_SIZE:-50G}
+      --vfs-cache-max-size ${RCLONE_CACHE_MAX_SIZE:-5G}
       --vfs-cache-max-age ${RCLONE_CACHE_MAX_AGE:-72h}
-      --vfs-cache-min-free-space ${RCLONE_CACHE_MIN_FREE:-10G}
+      --vfs-cache-min-free-space ${RCLONE_CACHE_MIN_FREE:-20G}
     volumes:
       - rclone-cache:/cache
     networks:
