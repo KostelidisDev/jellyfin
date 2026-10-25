@@ -9,7 +9,7 @@ x-logging: &default-logging
 
 services:
   jellyfin:
-    image: jellyfin/jellyfin:${JELLYFIN_TAG:-12.2}
+    image: jellyfin/jellyfin:${JELLYFIN_TAG:-12.3}
     container_name: ${SERVICE_NAME:-jellyfin}
     restart: unless-stopped
     stop_grace_period: 30s
