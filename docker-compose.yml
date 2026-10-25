@@ -9,7 +9,7 @@ x-logging: &default-logging
 
 services:
   jellyfin:
-    image: jellyfin/jellyfin:${JELLYFIN_TAG:-12.3}
+    image: jellyfin/jellyfin:12.3
     container_name: ${SERVICE_NAME:-jellyfin}
     restart: unless-stopped
     stop_grace_period: 30s
@@ -86,7 +86,7 @@ services:
 
   rclone-secret:
     # Keep in step with your other rclone images.
-    image: rclone/rclone:${RCLONE_TAG:-1.75}
+    image: rclone/rclone:1.75
     container_name: ${SERVICE_NAME:-jellyfin}-rclone-secret
     restart: unless-stopped
     # Serves NFS on an unprivileged port and writes only to its cache volume.
@@ -160,7 +160,7 @@ services:
   # Note: while this runs, a manually stopped Jellyfin is started again within
   # ~15 s — stop the watchdog first if you want Jellyfin down.
   watchdog:
-    image: docker:${DOCKER_CLI_TAG:-29.9.0-cli-alpine3.24}
+    image: docker:29.9.0-cli-alpine3.24
     container_name: ${SERVICE_NAME:-jellyfin}-watchdog
     restart: unless-stopped
     read_only: true
