@@ -9,7 +9,7 @@ x-logging: &default-logging
 
 services:
   jellyfin:
-    image: ghcr.io/jellyfin/jellyfin:12.3.20261023-013714
+    image: ghcr.io/jellyfin/jellyfin:12.4.20261026-211555
     container_name: ${SERVICE_NAME:-jellyfin}
     restart: unless-stopped
     stop_grace_period: 30s
