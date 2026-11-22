@@ -160,7 +160,7 @@ services:
   # Note: while this runs, a manually stopped Jellyfin is started again within
   # ~15 s — stop the watchdog first if you want Jellyfin down.
   watchdog:
-    image: docker:29.9.2-cli-alpine3.24
+    image: docker:29.10.0-cli-alpine3.24
     container_name: ${SERVICE_NAME:-jellyfin}-watchdog
     restart: unless-stopped
     read_only: true
